@@ -1,4 +1,3 @@
-
 import os
 
 from dotenv import load_dotenv
@@ -12,7 +11,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL est introuvable")
 
-# Utiliser psycopg au lieu de psycopg2
 if DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace(
         "postgresql://",
