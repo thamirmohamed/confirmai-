@@ -4,42 +4,42 @@ import hmac
 import hashlib
 import base64
 import json
+import time
 import requests
 
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import RedirectResponse
 
 from backend.database.database import SessionLocal
 from backend.models.store import Store
 
 
-router = APIRouter(prefix="/shopify", tags=["Shopify"])
+router = APIRouter(
+    prefix="/shopify",
+    tags=["Shopify"]
+)
 
 
 SHOPIFY_API_KEY = os.getenv("SHOPIFY_API_KEY")
 SHOPIFY_API_SECRET = os.getenv("SHOPIFY_API_SECRET")
-SHOPIFY_SCOPES = os.getenv(
-    "SHOPIFY_SCOPES",
-    "read_orders"
-)
+SHOPIFY_SCOPES = os.getenv("SHOPIFY_SCOPES", "read_orders")
 SHOPIFY_REDIRECT_URI = os.getenv("SHOPIFY_REDIRECT_URI")
 
 
 def create_state(user_id: str) -> str:
-    """
-    Crée un state signé contenant l'utilisateur.
-    """
-
     data = {
         "user_id": user_id,
         "nonce": secrets.token_urlsafe(32),
+        "timestamp": int(time.time()),
     }
 
     payload = base64.urlsafe_b64encode(
-        json.dumps(data).encode()
-    ).decode()
+        json.dumps(
+            data,
+            separators=(",", ":")
+        ).encode()
+    ).decode().rstrip("=")
 
     signature = hmac.new(
         SHOPIFY_API_SECRET.encode(),
@@ -51,12 +51,16 @@ def create_state(user_id: str) -> str:
 
 
 def verify_state(state: str) -> str:
-    """
-    Vérifie le state et retourne le user_id.
-    """
-
     try:
-        payload, signature = state.split(".", 1)
+        if not state:
+            raise ValueError("state manquant")
+
+        parts = state.split(".", 1)
+
+        if len(parts) != 2:
+            raise ValueError("state invalide")
+
+        payload, signature = parts
 
         expected_signature = hmac.new(
             SHOPIFY_API_SECRET.encode(),
@@ -68,18 +72,31 @@ def verify_state(state: str) -> str:
             signature,
             expected_signature
         ):
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid Shopify state"
-            )
+            raise ValueError("signature invalide")
 
-        data = json.loads(
-            base64.urlsafe_b64decode(
-                payload.encode()
-            )
+        padding = "=" * (-len(payload) % 4)
+
+        decoded = base64.urlsafe_b64decode(
+            (payload + padding).encode()
         )
 
-        return data["user_id"]
+        data = json.loads(decoded.decode())
+
+        timestamp = data.get("timestamp")
+
+        if not timestamp:
+            raise ValueError("timestamp manquant")
+
+        # State valable pendant 10 minutes
+        if time.time() - int(timestamp) > 600:
+            raise ValueError("state expiré")
+
+        user_id = data.get("user_id")
+
+        if not user_id:
+            raise ValueError("user_id manquant")
+
+        return user_id
 
     except Exception:
         raise HTTPException(
@@ -93,9 +110,6 @@ def install(
     shop: str,
     user_id: str
 ):
-    """
-    Démarre la connexion Shopify.
-    """
 
     if not SHOPIFY_API_KEY:
         raise HTTPException(
@@ -116,6 +130,14 @@ def install(
         )
 
     shop = shop.strip().lower()
+
+    if shop.startswith("https://"):
+        shop = shop.replace("https://", "", 1)
+
+    if shop.startswith("http://"):
+        shop = shop.replace("http://", "", 1)
+
+    shop = shop.rstrip("/")
 
     if not shop.endswith(".myshopify.com"):
         raise HTTPException(
@@ -148,9 +170,6 @@ def callback(
     code: str,
     state: str
 ):
-    """
-    Callback Shopify après installation.
-    """
 
     if not SHOPIFY_API_KEY:
         raise HTTPException(
@@ -164,11 +183,30 @@ def callback(
             detail="SHOPIFY_API_SECRET manquante"
         )
 
+    if not code:
+        raise HTTPException(
+            status_code=400,
+            detail="Code Shopify manquant"
+        )
+
     user_id = verify_state(state)
 
     shop = shop.strip().lower()
 
-    # Échange du code contre le token Shopify
+    if shop.startswith("https://"):
+        shop = shop.replace("https://", "", 1)
+
+    if shop.startswith("http://"):
+        shop = shop.replace("http://", "", 1)
+
+    shop = shop.rstrip("/")
+
+    if not shop.endswith(".myshopify.com"):
+        raise HTTPException(
+            status_code=400,
+            detail="Domaine Shopify invalide"
+        )
+
     response = requests.post(
         f"https://{shop}/admin/oauth/access_token",
         json={
@@ -182,7 +220,7 @@ def callback(
     if response.status_code != 200:
         raise HTTPException(
             status_code=400,
-            detail=response.text,
+            detail=f"Shopify OAuth error: {response.text}"
         )
 
     data = response.json()
@@ -195,7 +233,6 @@ def callback(
             detail="Access token Shopify introuvable"
         )
 
-    # Sauvegarde de la boutique
     db = SessionLocal()
 
     try:
@@ -232,7 +269,7 @@ def callback(
         return {
             "success": True,
             "message": "Boutique Shopify connectée avec succès",
-            "store_id": store.id,
+            "store_id": str(store.id),
             "shop": store.shopify_domain,
         }
 
