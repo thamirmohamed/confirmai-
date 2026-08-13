@@ -19,13 +19,17 @@ router = APIRouter(prefix="/shopify", tags=["Shopify"])
 
 SHOPIFY_API_KEY = os.getenv("SHOPIFY_API_KEY")
 SHOPIFY_API_SECRET = os.getenv("SHOPIFY_API_SECRET")
+
 SHOPIFY_SCOPES = os.getenv(
     "SHOPIFY_SCOPES",
     "read_orders,read_customers"
 )
-SHOPIFY_REDIRECT_URI = os.getenv("SHOPIFY_REDIRECT_URI")
 
-EXPECTED_SHOP = "capsworld-2.myshopify.com"
+SHOPIFY_REDIRECT_URI = os.getenv(
+    "SHOPIFY_REDIRECT_URI"
+)
+
+SHOPIFY_SHOP = "hkdhpg-fm.myshopify.com"
 
 
 def create_state(user_id: str, shop: str) -> str:
@@ -113,13 +117,13 @@ def install(
             detail="Utilise le domaine xxx.myshopify.com"
         )
 
-    if shop != EXPECTED_SHOP:
+    if shop != SHOPIFY_SHOP:
         raise HTTPException(
             status_code=400,
             detail={
-                "error": "Boutique non autorisée",
+                "error": "Mauvaise boutique",
                 "shop_recu": shop,
-                "shop_attendu": EXPECTED_SHOP
+                "shop_attendu": SHOPIFY_SHOP
             }
         )
 
@@ -141,6 +145,9 @@ def install(
     )
 
     return {
+        "success": True,
+        "shop": shop,
+        "scopes": SHOPIFY_SCOPES.split(","),
         "install_url": install_url
     }
 
@@ -166,27 +173,27 @@ def callback(
     state_data = verify_state(state)
 
     user_id = state_data["user_id"]
-    expected_shop_from_state = state_data["shop"]
+    expected_shop = state_data["shop"]
 
     shop = shop.strip().lower()
 
-    if shop != expected_shop_from_state:
+    if shop != expected_shop:
         raise HTTPException(
             status_code=400,
             detail={
                 "error": "Shop différent entre install et callback",
                 "shop_recu": shop,
-                "shop_attendu": expected_shop_from_state
+                "shop_attendu": expected_shop
             }
         )
 
-    if shop != EXPECTED_SHOP:
+    if shop != SHOPIFY_SHOP:
         raise HTTPException(
             status_code=400,
             detail={
-                "error": "Mauvaise boutique Shopify",
+                "error": "Boutique Shopify non autorisée",
                 "shop_recu": shop,
-                "shop_attendu": EXPECTED_SHOP
+                "shop_attendu": SHOPIFY_SHOP
             }
         )
 
@@ -235,10 +242,7 @@ def callback(
         else:
             store = Store(
                 user_id=user_id,
-                shop_name=shop.replace(
-                    ".myshopify.com",
-                    ""
-                ),
+                shop_name="CAPS WORLD",
                 shopify_domain=shop,
                 access_token=access_token,
                 is_active=True,
@@ -254,6 +258,7 @@ def callback(
             "message": "Boutique Shopify connectée avec succès",
             "store_id": store.id,
             "shop": store.shopify_domain,
+            "shop_name": store.shop_name,
         }
 
     except Exception as e:
@@ -287,26 +292,21 @@ def scopes(store_id: str):
                 detail="Boutique introuvable"
             )
 
-        response = requests.get(
-            f"https://{store.shopify_domain}/admin/api/2026-07/shop.json",
-            headers={
-                "X-Shopify-Access-Token": store.access_token
-            },
-            timeout=30,
-        )
-
-        if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=response.text
-            )
-
         return {
             "success": True,
             "shop": store.shopify_domain,
-            "scopes": SHOPIFY_SCOPES.split(","),
-            "has_read_orders": "read_orders" in SHOPIFY_SCOPES.split(","),
-            "has_read_customers": "read_customers" in SHOPIFY_SCOPES.split(","),
+            "scopes": [
+                scope.strip()
+                for scope in SHOPIFY_SCOPES.split(",")
+            ],
+            "has_read_orders": (
+                "read_orders"
+                in SHOPIFY_SCOPES.split(",")
+            ),
+            "has_read_customers": (
+                "read_customers"
+                in SHOPIFY_SCOPES.split(",")
+            ),
         }
 
     finally:
