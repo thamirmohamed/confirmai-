@@ -248,6 +248,10 @@ def callback(
             detail="Domaine Shopify invalide"
         )
 
+    # ========================================================
+    # ECHANGE DU CODE CONTRE LE TOKEN SHOPIFY
+    # ========================================================
+
     response = requests.post(
         f"https://{shop}/admin/oauth/access_token",
         json={
@@ -268,11 +272,41 @@ def callback(
 
     access_token = data.get("access_token")
 
+    # ========================================================
+    # DEBUG
+    # ========================================================
+
+    print("==========================================")
+    print("SHOPIFY OAUTH CALLBACK")
+    print("SHOP :", shop)
+    print("USER ID :", user_id)
+    print("SCOPES DEMANDES :", SHOPIFY_SCOPES)
+    print("SCOPES RETOURNES PAR SHOPIFY :", data.get("scope"))
+    print(
+        "TOKEN RECU :",
+        (
+            access_token[:10] + "..." + access_token[-5:]
+        )
+        if access_token
+        else "AUCUN TOKEN"
+    )
+    print(
+        "TOKEN LENGTH :",
+        len(access_token)
+        if access_token
+        else 0
+    )
+    print("==========================================")
+
     if not access_token:
         raise HTTPException(
             status_code=400,
             detail="Access token Shopify introuvable"
         )
+
+    # ========================================================
+    # SAUVEGARDE DE LA BOUTIQUE
+    # ========================================================
 
     db = SessionLocal()
 
