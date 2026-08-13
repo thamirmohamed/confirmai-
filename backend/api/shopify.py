@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException
 
 from backend.database.database import SessionLocal
 from backend.models.store import Store
+from backend.models.order import Order
 
 
 router = APIRouter(
@@ -23,11 +24,21 @@ router = APIRouter(
 
 SHOPIFY_API_KEY = os.getenv("SHOPIFY_API_KEY")
 SHOPIFY_API_SECRET = os.getenv("SHOPIFY_API_SECRET")
-SHOPIFY_SCOPES = os.getenv("SHOPIFY_SCOPES", "read_orders")
+SHOPIFY_SCOPES = os.getenv(
+    "SHOPIFY_SCOPES",
+    "read_orders"
+)
 SHOPIFY_REDIRECT_URI = os.getenv("SHOPIFY_REDIRECT_URI")
 
+SHOPIFY_API_VERSION = "2026-07"
+
+
+# ============================================================
+# STATE
+# ============================================================
 
 def create_state(user_id: str) -> str:
+
     data = {
         "user_id": user_id,
         "nonce": secrets.token_urlsafe(32),
@@ -51,7 +62,9 @@ def create_state(user_id: str) -> str:
 
 
 def verify_state(state: str) -> str:
+
     try:
+
         if not state:
             raise ValueError("state manquant")
 
@@ -80,14 +93,15 @@ def verify_state(state: str) -> str:
             (payload + padding).encode()
         )
 
-        data = json.loads(decoded.decode())
+        data = json.loads(
+            decoded.decode()
+        )
 
         timestamp = data.get("timestamp")
 
         if not timestamp:
             raise ValueError("timestamp manquant")
 
-        # State valable pendant 10 minutes
         if time.time() - int(timestamp) > 600:
             raise ValueError("state expiré")
 
@@ -99,11 +113,16 @@ def verify_state(state: str) -> str:
         return user_id
 
     except Exception:
+
         raise HTTPException(
             status_code=400,
             detail="Invalid Shopify state"
         )
 
+
+# ============================================================
+# INSTALL
+# ============================================================
 
 @router.get("/install")
 def install(
@@ -132,10 +151,18 @@ def install(
     shop = shop.strip().lower()
 
     if shop.startswith("https://"):
-        shop = shop.replace("https://", "", 1)
+        shop = shop.replace(
+            "https://",
+            "",
+            1
+        )
 
     if shop.startswith("http://"):
-        shop = shop.replace("http://", "", 1)
+        shop = shop.replace(
+            "http://",
+            "",
+            1
+        )
 
     shop = shop.rstrip("/")
 
@@ -163,6 +190,10 @@ def install(
         "install_url": install_url
     }
 
+
+# ============================================================
+# CALLBACK
+# ============================================================
 
 @router.get("/callback")
 def callback(
@@ -194,10 +225,18 @@ def callback(
     shop = shop.strip().lower()
 
     if shop.startswith("https://"):
-        shop = shop.replace("https://", "", 1)
+        shop = shop.replace(
+            "https://",
+            "",
+            1
+        )
 
     if shop.startswith("http://"):
-        shop = shop.replace("http://", "", 1)
+        shop = shop.replace(
+            "http://",
+            "",
+            1
+        )
 
     shop = shop.rstrip("/")
 
@@ -206,6 +245,10 @@ def callback(
             status_code=400,
             detail="Domaine Shopify invalide"
         )
+
+    # --------------------------------------------------------
+    # Exchange code -> access token
+    # --------------------------------------------------------
 
     response = requests.post(
         f"https://{shop}/admin/oauth/access_token",
@@ -233,9 +276,14 @@ def callback(
             detail="Access token Shopify introuvable"
         )
 
+    # --------------------------------------------------------
+    # Save store
+    # --------------------------------------------------------
+
     db = SessionLocal()
 
     try:
+
         store = (
             db.query(Store)
             .filter(
@@ -245,11 +293,13 @@ def callback(
         )
 
         if store:
+
             store.access_token = access_token
             store.user_id = user_id
             store.is_active = True
 
         else:
+
             store = Store(
                 user_id=user_id,
                 shop_name=shop.replace(
@@ -274,6 +324,7 @@ def callback(
         }
 
     except Exception as e:
+
         db.rollback()
 
         raise HTTPException(
@@ -282,4 +333,416 @@ def callback(
         )
 
     finally:
+
         db.close()
+
+
+# ============================================================
+# IMPORT COMMANDES SHOPIFY
+# ============================================================
+
+@router.get("/orders/import")
+def import_orders(store_id: str):
+
+    db = SessionLocal()
+
+    try:
+
+        # ----------------------------------------------------
+        # Find store
+        # ----------------------------------------------------
+
+        store = (
+            db.query(Store)
+            .filter(
+                Store.id == store_id
+            )
+            .first()
+        )
+
+        if not store:
+
+            raise HTTPException(
+                status_code=404,
+                detail="Boutique introuvable"
+            )
+
+        if not store.access_token:
+
+            raise HTTPException(
+                status_code=400,
+                detail="Cette boutique n'a pas de token Shopify"
+            )
+
+        shop = store.shopify_domain
+
+        access_token = store.access_token
+
+        # ----------------------------------------------------
+        # Shopify GraphQL endpoint
+        # ----------------------------------------------------
+
+        url = (
+            f"https://{shop}"
+            f"/admin/api/{SHOPIFY_API_VERSION}"
+            f"/graphql.json"
+        )
+
+        # ----------------------------------------------------
+        # GraphQL query
+        # ----------------------------------------------------
+
+        query = """
+        query GetOrders($first: Int!, $after: String) {
+
+            orders(
+                first: $first,
+                after: $after,
+                sortKey: CREATED_AT,
+                reverse: true
+            ) {
+
+                edges {
+
+                    cursor
+
+                    node {
+
+                        id
+                        name
+                        createdAt
+
+                        customer {
+                            displayName
+                            phone
+                        }
+
+                        totalPriceSet {
+                            shopMoney {
+                                amount
+                                currencyCode
+                            }
+                        }
+
+                        shippingAddress {
+                            address1
+                            city
+                            phone
+                        }
+
+                        lineItems(first: 50) {
+
+                            edges {
+
+                                node {
+
+                                    name
+                                    quantity
+
+                                }
+
+                            }
+
+                        }
+
+                    }
+
+                }
+
+                pageInfo {
+
+                    hasNextPage
+                    endCursor
+
+                }
+
+            }
+
+        }
+        """
+
+        imported = 0
+        updated = 0
+        after = None
+
+        # ----------------------------------------------------
+        # Pagination
+        # ----------------------------------------------------
+
+        while True:
+
+            response = requests.post(
+                url,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Shopify-Access-Token": access_token,
+                },
+                json={
+                    "query": query,
+                    "variables": {
+                        "first": 50,
+                        "after": after,
+                    },
+                },
+                timeout=30,
+            )
+
+            if response.status_code != 200:
+
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Shopify API error: {response.text}"
+                )
+
+            result = response.json()
+
+            if result.get("errors"):
+
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "shopify_errors": result["errors"]
+                    }
+                )
+
+            orders_data = (
+                result
+                .get("data", {})
+                .get("orders", {})
+            )
+
+            edges = orders_data.get(
+                "edges",
+                []
+            )
+
+            # ------------------------------------------------
+            # Save orders
+            # ------------------------------------------------
+
+            for edge in edges:
+
+                shopify_order = edge["node"]
+
+                shopify_order_id = shopify_order["id"]
+
+                # --------------------------------------------
+                # Customer
+                # --------------------------------------------
+
+                customer = shopify_order.get(
+                    "customer"
+                ) or {}
+
+                customer_name = (
+                    customer.get("displayName")
+                    or "Client Shopify"
+                )
+
+                phone = (
+                    customer.get("phone")
+                    or (
+                        shopify_order
+                        .get("shippingAddress")
+                        or {}
+                    ).get("phone")
+                    or "Non renseigné"
+                )
+
+                # --------------------------------------------
+                # Address
+                # --------------------------------------------
+
+                shipping_address = (
+                    shopify_order
+                    .get("shippingAddress")
+                    or {}
+                )
+
+                address = (
+                    shipping_address.get(
+                        "address1"
+                    )
+                )
+
+                city = (
+                    shipping_address.get(
+                        "city"
+                    )
+                )
+
+                # --------------------------------------------
+                # Price
+                # --------------------------------------------
+
+                money = (
+                    shopify_order
+                    .get("totalPriceSet", {})
+                    .get("shopMoney", {})
+                )
+
+                amount = float(
+                    money.get(
+                        "amount",
+                        0
+                    )
+                )
+
+                currency = (
+                    money.get(
+                        "currencyCode"
+                    )
+                    or "MAD"
+                )
+
+                # --------------------------------------------
+                # Products
+                # --------------------------------------------
+
+                line_items = (
+                    shopify_order
+                    .get("lineItems", {})
+                    .get("edges", [])
+                )
+
+                products = []
+
+                for item_edge in line_items:
+
+                    item = item_edge["node"]
+
+                    name = item.get(
+                        "name",
+                        "Produit"
+                    )
+
+                    quantity = item.get(
+                        "quantity",
+                        1
+                    )
+
+                    products.append(
+                        f"{name} x{quantity}"
+                    )
+
+                product = ", ".join(
+                    products
+                )
+
+                if not product:
+                    product = "Commande Shopify"
+
+                # --------------------------------------------
+                # Existing order?
+                # --------------------------------------------
+
+                existing_order = (
+                    db.query(Order)
+                    .filter(
+                        Order.shopify_order_id
+                        == shopify_order_id
+                    )
+                    .first()
+                )
+
+                if existing_order:
+
+                    existing_order.customer_name = (
+                        customer_name
+                    )
+
+                    existing_order.phone = phone
+
+                    existing_order.product = product
+
+                    existing_order.price = amount
+
+                    existing_order.city = city
+
+                    existing_order.address = address
+
+                    existing_order.currency = currency
+
+                    updated += 1
+
+                else:
+
+                    new_order = Order(
+
+                        store_id=store.id,
+
+                        customer_name=customer_name,
+
+                        phone=phone,
+
+                        product=product,
+
+                        price=amount,
+
+                        city=city,
+
+                        address=address,
+
+                        status="Pending",
+
+                        shopify_order_id=shopify_order_id,
+
+                        currency=currency,
+                    )
+
+                    db.add(new_order)
+
+                    imported += 1
+
+            # ------------------------------------------------
+            # Next page?
+            # ------------------------------------------------
+
+            page_info = orders_data.get(
+                "pageInfo",
+                {}
+            )
+
+            if not page_info.get(
+                "hasNextPage"
+            ):
+
+                break
+
+            after = page_info.get(
+                "endCursor"
+            )
+
+        db.commit()
+
+        return {
+
+            "success": True,
+
+            "message": "Import des commandes terminé",
+
+            "shop": shop,
+
+            "imported": imported,
+
+            "updated": updated,
+
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except Exception as e:
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur import commandes: {str(e)}"
+        )
+
+    finally:
+
+        db.close()
+        
