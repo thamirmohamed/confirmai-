@@ -34,7 +34,10 @@ def register(data: RegisterRequest):
         existing = db.query(User).filter(User.email == data.email).first()
 
         if existing:
-            raise HTTPException(status_code=400, detail="Email already exists")
+            raise HTTPException(
+                status_code=400,
+                detail="Email already exists"
+            )
 
         user = User(
             full_name=data.full_name,
@@ -48,12 +51,20 @@ def register(data: RegisterRequest):
         db.refresh(user)
 
         return {
-            "message": "Account created successfully"
+            "message": "Account created successfully",
+            "user_id": str(user.id),
+            "email": user.email
         }
+
+    except HTTPException:
+        raise
 
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
     finally:
         db.close()
@@ -61,8 +72,39 @@ def register(data: RegisterRequest):
 
 @router.post("/login")
 def login(data: LoginRequest):
-    return {
-        "message": "LOGIN OK"
-    }
 
-    
+    db: Session = SessionLocal()
+
+    try:
+        user = db.query(User).filter(
+            User.email == data.email
+        ).first()
+
+        if not user:
+            raise HTTPException(
+                status_code=401,
+                detail="Email ou mot de passe incorrect"
+            )
+
+        if not verify_password(
+            data.password,
+            user.password_hash
+        ):
+            raise HTTPException(
+                status_code=401,
+                detail="Email ou mot de passe incorrect"
+            )
+
+        access_token = create_access_token(
+            data={"sub": str(user.id)}
+        )
+
+        return {
+            "message": "LOGIN OK",
+            "user_id": str(user.id),
+            "access_token": access_token,
+            "token_type": "bearer"
+        }
+
+    finally:
+        db.close()
