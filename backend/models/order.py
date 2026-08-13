@@ -1,7 +1,6 @@
 import uuid
 
 from sqlalchemy import Column, String, Float, DateTime, ForeignKey
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -11,33 +10,62 @@ from backend.database.database import Base
 class Order(Base):
     __tablename__ = "orders"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
 
     store_id = Column(
-        UUID(as_uuid=True),
+        String(36),
         ForeignKey("stores.id", ondelete="CASCADE"),
         nullable=False
     )
 
-    customer_name = Column(String, nullable=False)
+    customer_name = Column(
+        String,
+        nullable=False
+    )
 
-    phone = Column(String, nullable=False)
+    phone = Column(
+        String,
+        nullable=False
+    )
 
-    product = Column(String, nullable=False)
+    product = Column(
+        String,
+        nullable=False
+    )
 
-    price = Column(Float, nullable=False)
+    price = Column(
+        Float,
+        nullable=False
+    )
 
     city = Column(String)
 
     address = Column(String)
 
-    status = Column(String, default="Pending")
+    status = Column(
+        String,
+        default="Pending"
+    )
 
-    shopify_order_id = Column(String, unique=True, nullable=True)
+    shopify_order_id = Column(
+        String,
+        unique=True,
+        nullable=True
+    )
 
-    currency = Column(String, default="MAD")
+    currency = Column(
+        String,
+        default="MAD"
+    )
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now()
+    )
 
     updated_at = Column(
         DateTime(timezone=True),
@@ -45,4 +73,7 @@ class Order(Base):
         onupdate=func.now()
     )
 
-    store = relationship("Store", back_populates="orders")
+    store = relationship(
+        "Store",
+        back_populates="orders"
+    )
