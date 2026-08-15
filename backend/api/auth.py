@@ -1,110 +1,143 @@
-from fastapi import APIRouter, HTTPException
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
+from sqlalchemy.orm import Session
+from jose import jwt, JWTError
 
 from backend.database.database import SessionLocal
 from backend.models.user import User
 from backend.utils.security import hash_password, verify_password
-from backend.utils.jwt import create_access_token
+from backend.utils.jwt import SECRET_KEY, ALGORITHM, create_access_token
+
 
 router = APIRouter(
     prefix="/auth",
     tags=["Authentication"]
 )
 
+security = HTTPBearer()
 
-class RegisterRequest(BaseModel):
-    full_name: str
-    company_name: str
+
+class AuthRequest(BaseModel):
     email: EmailStr
     password: str
 
 
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
+):
+    token = credentials.credentials
+
+    try:
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM]
+        )
+
+        user_id = payload.get("sub")
+
+        if not user_id:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid token"
+            )
+
+    except JWTError:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid token"
+        )
+
+    user = (
+        db.query(User)
+        .filter(User.id == user_id)
+        .first()
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="User not found"
+        )
+
+    return user
 
 
 @router.post("/register")
-def register(data: RegisterRequest):
+def register(
+    data: AuthRequest,
+    db: Session = Depends(get_db)
+):
+    existing_user = (
+        db.query(User)
+        .filter(User.email == data.email)
+        .first()
+    )
 
-    db: Session = SessionLocal()
-
-    try:
-        existing = db.query(User).filter(User.email == data.email).first()
-
-        if existing:
-            raise HTTPException(
-                status_code=400,
-                detail="Email already exists"
-            )
-
-        user = User(
-            full_name=data.full_name,
-            company_name=data.company_name,
-            email=data.email,
-            password_hash=hash_password(data.password),
-        )
-
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-        return {
-            "message": "Account created successfully",
-            "user_id": str(user.id),
-            "email": user.email
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        db.rollback()
+    if existing_user:
         raise HTTPException(
-            status_code=500,
-            detail=str(e)
+            status_code=400,
+            detail="Email already registered"
         )
 
-    finally:
-        db.close()
+    user = User(
+        email=data.email,
+        password_hash=hash_password(data.password)
+    )
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "message": "REGISTER OK",
+        "user_id": str(user.id)
+    }
 
 
 @router.post("/login")
-def login(data: LoginRequest):
+def login(
+    data: AuthRequest,
+    db: Session = Depends(get_db)
+):
+    user = (
+        db.query(User)
+        .filter(User.email == data.email)
+        .first()
+    )
 
-    db: Session = SessionLocal()
-
-    try:
-        user = db.query(User).filter(
-            User.email == data.email
-        ).first()
-
-        if not user:
-            raise HTTPException(
-                status_code=401,
-                detail="Email ou mot de passe incorrect"
-            )
-
-        if not verify_password(
-            data.password,
-            user.password_hash
-        ):
-            raise HTTPException(
-                status_code=401,
-                detail="Email ou mot de passe incorrect"
-            )
-
-        access_token = create_access_token(
-            data={"sub": str(user.id)}
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password"
         )
 
-        return {
-            "message": "LOGIN OK",
-            "user_id": str(user.id),
-            "access_token": access_token,
-            "token_type": "bearer"
-        }
+    if not verify_password(
+        data.password,
+        user.password_hash
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password"
+        )
 
-    finally:
-        db.close()
+    access_token = create_access_token({
+        "sub": str(user.id)
+    })
+
+    return {
+        "message": "LOGIN OK",
+        "user_id": str(user.id),
+        "access_token": access_token,
+        "token_type": "bearer"
+    }
